@@ -1,0 +1,216 @@
+import json, subprocess, os, sys, time, socket
+from datetime import datetime
+from fpdf import FPDF, XPos, YPos
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.progress import Progress, BarColumn, TextColumn
+
+# Professional Terminal UI Initialization
+console = Console()
+
+class ScannerEngine:
+    def __init__(self):
+        self.rules_file = 'rules.json'
+        self.harden_pb = 'remediate.yml'
+        self.unharden_pb = 'unharden.yml'
+        self.stats = {"PASS": 0, "FAIL": 0}
+        self.results = [] 
+
+    def check_net(self):
+        """ Checks for active internet connection """
+        try:
+            socket.setdefaulttimeout(2)
+            socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("8.8.8.8", 53))
+            return True
+        except: 
+            return False
+
+    def run_audit(self, label, silent=False):
+        """ Executes checks from rules.json and calculates score """
+        if not os.path.exists(self.rules_file):
+            sys.exit(f"Error: {self.rules_file} missing.")
+            
+        with open(self.rules_file, 'r') as f:
+            rules = json.load(f)
+        
+        self.stats = {"PASS": 0, "FAIL": 0}
+        self.results = [] 
+        
+        table = Table(title=f"\n[bold blue]CIS AUDIT TABLE:[/] {label}", border_style="bright_blue")
+        table.add_column("ID", style="cyan")
+        table.add_column("Description", style="white")
+        table.add_column("Risk", justify="center")
+        table.add_column("Status", justify="center")
+
+        for r in rules:
+            p = subprocess.run(r['check'], shell=True, capture_output=True, text=True)
+            val = "PASS" if p.returncode == 0 else "FAIL"
+            self.stats[val] += 1
+            
+            lvl_color = "red" if r['level'] == "Critical" else "yellow" if r['level'] == "High" else "blue"
+            status_str = "[bold green]PASS[/]" if val == "PASS" else "[bold red]FAIL[/]"
+            
+            if not silent:
+                table.add_row(r['id'], r['desc'], f"[{lvl_color}]{r['level']}[/]", status_str)
+            
+            self.results.append({"id": r['id'], "desc": r['desc'], "level": r['level'], "status": val})
+
+        score = round((self.stats['PASS'] / len(rules)) * 100)
+        
+        if not silent:
+            console.print(Panel(f"📊 [bold]TOTAL COMPLIANCE SCORE: {score}%[/]", border_style="blue"))
+            with Progress(BarColumn(), TextColumn("[progress.percentage]{task.percentage:>3.0f}%")) as prog:
+                prog.add_task("Security Integrity", total=100, completed=score)
+            console.print(table)
+            self.generate_pdf(label, score)
+        
+        return score
+
+    def generate_pdf(self, label, score):
+        """ Modern FPDF2 logic to ensure no Deprecation Warnings """
+        pdf = FPDF()
+        pdf.add_page()
+        
+        # Header Banner
+        pdf.set_fill_color(33, 150, 243) 
+        pdf.rect(0, 0, 210, 40, 'F')
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("helvetica", 'B', 24)
+        pdf.cell(190, 20, "CIS COMPLIANCE REPORT", align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.set_font("helvetica", 'I', 12)
+        pdf.cell(190, 10, f"System Audit Trace: {label}", align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        
+        # Summary Section
+        pdf.set_y(50)
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("helvetica", 'B', 14)
+        pdf.cell(100, 10, "EXECUTIVE SUMMARY", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        
+        pdf.set_font("helvetica", '', 11)
+        pdf.cell(100, 7, f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(100, 7, f"Network: {'ONLINE' if self.check_net() else 'OFFLINE'}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        
+        # Compliance Score Graphic
+        pdf.set_xy(150, 55)
+        color = (76, 175, 80) if score > 85 else (244, 67, 54)
+        pdf.set_fill_color(*color)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("helvetica", 'B', 28)
+        pdf.cell(45, 25, f"{score}%", align='C', fill=True)
+        
+        # Audit Table Header
+        pdf.set_xy(10, 95)
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("helvetica", 'B', 11)
+        pdf.set_fill_color(235, 235, 235)
+        pdf.cell(20, 10, "ID", border=1, align='C', fill=True)
+        pdf.cell(105, 10, "Security Control Description", border=1, align='L', fill=True)
+        pdf.cell(30, 10, "Risk", border=1, align='C', fill=True)
+        pdf.cell(35, 10, "Status", border=1, align='C', fill=True, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        
+        # Audit Table Rows
+        pdf.set_font("helvetica", '', 9)
+        for r in self.results:
+            status_color = (0, 120, 0) if r['status'] == "PASS" else (200, 0, 0)
+            
+            pdf.set_text_color(0, 0, 0)
+            pdf.cell(20, 8, r['id'], border=1, align='C')
+            pdf.cell(105, 8, r['desc'], border=1, align='L')
+            pdf.cell(30, 8, r['level'], border=1, align='C')
+            
+            pdf.set_text_color(*status_color)
+            pdf.cell(35, 8, r['status'], border=1, align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+        fname = f"Audit_{label.replace(' ', '_')}.pdf"
+        pdf.output(fname)
+        console.print(Panel(f"🔔 [bold green]CLEAN REPORT GENERATED:[/] {fname}", border_style="green"))
+
+    def run_task(self, mode):
+        """ Executes Ansible remediation or rollback """
+        online = self.check_net()
+        file = self.harden_pb if mode == "harden" else self.unharden_pb
+        console.print(Panel(f"🚀 [bold yellow]ANSIBLE START:[/] {file}", border_style="yellow"))
+        # Passes the 'is_online' variable to Ansible to skip apt tasks if offline
+        subprocess.run(["ansible-playbook", file, "--extra-vars", f"is_online={'yes' if online else 'no'}"])
+
+    def start_drift_monitor(self):
+        """ Option 4: Continuous Monitoring with Visual Feedback """
+        console.clear()
+        console.print(Panel(
+            "🛡️  [bold green]DRIFT DETECTION ENGINE ACTIVE[/]\n"
+            "Monitoring system state for unauthorized modifications...\n\n"
+            "[bold red]PRESS CTRL+C TO STOP MONITORING[/]", 
+            border_style="green"
+        ))
+        try:
+            while True:
+                timestamp = datetime.now().strftime('%H:%M:%S')
+                score = self.run_audit("Background Scan", silent=True)
+                
+                if score < 100:
+                    console.print(f"[{timestamp}] 🚨 [bold red]DRIFT DETECTED![/] Health dropped to {score}%")
+                    console.print(f"[{timestamp}] [bold yellow]Self-Healing initiated...[/]")
+                    
+                    self.run_task("harden")
+                    
+                    # Verify restoration
+                    new_score = self.run_audit("Post-Heal Verification", silent=True)
+                    if new_score == 100:
+                        console.print(f"[{timestamp}] ✅ [bold green]HEALTH RESTORED TO 100%[/]\n")
+                    else:
+                        console.print(f"[{timestamp}] ⚠️ [bold orange]Healing partial. Current Score: {new_score}%[/]\n")
+                else:
+                    console.print(f"[dim][{timestamp}] System Check: [green]100% Compliant[/][/]")
+                
+                time.sleep(15)
+        except KeyboardInterrupt:
+            console.print("\n[bold yellow]Stopping Drift Monitor... Returning to Main Menu.[/]")
+            time.sleep(1)
+
+if __name__ == "__main__":
+    # Ensure Root privileges
+    if os.geteuid() != 0: 
+        sys.exit("Error: This framework requires Root/Sudo privileges to audit and harden the system.")
+        
+    app = ScannerEngine()
+
+    # --- SERVICE MODE LOGIC ---
+    if "--drift-only" in sys.argv:
+        # Bypasses the menu for background systemd services
+        app.start_drift_monitor()
+        sys.exit(0)
+    # --------------------------
+
+    while True:
+        os.system('clear')
+        online = app.check_net()
+        status_icon = "[bold green]ONLINE[/]" if online else "[bold red]OFFLINE[/]"
+        
+        console.print(Panel.fit(
+            f"🛡️  [bold white]CIS HARDENING FRAMEWORK[/]\nNetwork: {status_icon}\n\n"
+            "1. AUDIT    - Run Security Scan\n"
+            "2. HARDEN   - Apply 100% Baseline\n"
+            "3. ROLLBACK - Inject Vulnerabilities[Audit Purpose/Testing Only]\n"
+            "4. DRIFT    - Start Self-Healing Monitor\n"
+            "5. EXIT     - Close", 
+            border_style="bright_blue"
+        ))
+        
+        move = input("\nSelect Option: ")
+        if move == '1': 
+            app.run_audit("Manual Audit")
+            input("\nEnter to continue...")
+        elif move == '2': 
+            app.run_task("harden")
+            app.run_audit("Verification")
+            input("\nEnter to continue...")
+        elif move == '3': 
+            app.run_task("rollback")
+            app.run_audit("Post-Rollback")
+            input("\nEnter to continue...")
+        elif move == '4': 
+            app.start_drift_monitor()
+        elif move == '5': 
+            console.print("[bold red]Shutting down framework...[/]")
+            break

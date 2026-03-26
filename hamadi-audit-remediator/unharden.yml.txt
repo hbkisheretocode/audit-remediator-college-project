@@ -1,0 +1,79 @@
+---
+- name: CIS Total Destructive Rollback (0% Goal)
+  hosts: localhost
+  connection: local
+  become: yes
+
+  tasks:
+    # 1. REMOVE PACKAGES (This fixes 4.1.1.1 and 4.2.1.1)
+    - name: 0.0.0 | Uninstall Security Packages
+      apt:
+        name: [ 'auditd', 'rsyslog', 'openssh-server' ]
+        state: absent
+        purge: yes  # This removes config files too
+      ignore_errors: yes
+
+    # 2. Re-enable Legacy Filesystems (1.1.1.x)
+    - name: 1.1.1 | Enable Legacy Protocols
+      file:
+        path: "/etc/modprobe.d/{{ item }}.conf"
+        state: absent
+      loop: [ 'cramfs', 'freevxfs', 'jffs2', 'hfs' ]
+
+    # 3. Weaken Permissions (6.1.x)
+    - name: 2.0.0 | Weaken System File Permissions
+      file:
+        path: "{{ item.p }}"
+        mode: '0666'
+      loop:
+        - { p: '/etc/passwd' }
+        - { p: '/etc/shadow' }
+        - { p: '/etc/group' }
+        - { p: '/etc/passwd-' }
+        - { p: '/boot/grub/grub.cfg' }
+      ignore_errors: yes
+
+    # 4. Disable Kernel Hardening (1.5.3 & 3.x.x)
+    - name: 3.0.0 | Disable Network Sysctl Protections
+      sysctl:
+        name: "{{ item.n }}"
+        value: "{{ item.v }}"
+        state: present
+        reload: yes
+      loop:
+        - { n: 'kernel.randomize_va_space', v: '0' }
+        - { n: 'net.ipv4.ip_forward', v: '1' }
+        - { n: 'net.ipv4.conf.all.accept_redirects', v: '1' }
+        - { n: 'net.ipv4.conf.all.secure_redirects', v: '1' }
+        - { n: 'net.ipv4.conf.all.log_martians', v: '0' }
+        - { n: 'net.ipv4.tcp_syncookies', v: '0' }
+
+    # 5. Force Core Dumps (1.5.1)
+    - name: 1.5.1 | Enable Core Dumps
+      lineinfile:
+        path: /etc/security/limits.conf
+        line: "* soft core unlimited"
+        state: present
+
+    # 6. Remove MOTD (1.7.1)
+    - name: 1.7.1 | Clear MOTD
+      file:
+        path: /etc/motd
+        state: absent
+
+    # 7. Weaken Password Policy (5.4.1.x)
+    - name: 5.4.1 | Weaken Password Aging
+      lineinfile:
+        path: /etc/login.defs
+        regexp: "{{ item.reg }}"
+        line: "{{ item.line }}"
+      loop:
+        - { reg: '^PASS_MAX_DAYS', line: 'PASS_MAX_DAYS   99999' }
+        - { reg: '^PASS_MIN_DAYS', line: 'PASS_MIN_DAYS   0' }
+
+    # 8. Remove su Restriction (5.6)
+    - name: 5.6 | Remove su Restriction
+      lineinfile:
+        path: /etc/pam.d/su
+        regexp: '^auth\s+required\s+pam_wheel.so'
+        state: absent

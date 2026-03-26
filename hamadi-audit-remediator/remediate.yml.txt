@@ -1,0 +1,129 @@
+---
+- name: Full CIS 30-Rule Hardening (Hybrid Online/Offline)
+  hosts: localhost
+  connection: local
+  become: yes
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # 0. PRE-REQUISITES: Opportunistic Installation
+    # -------------------------------------------------------------------------
+    - name: 0.0.0 | Install Missing Security Packages
+      apt:
+        name: [auditd, rsyslog, openssh-server]
+        state: present
+        update_cache: no  # Prevent hanging on offline cache refresh
+      when: is_online == 'yes'
+      ignore_errors: yes  # Crucial: Allows script to continue if offline/locked
+
+    # -------------------------------------------------------------------------
+    # 1. FILESYSTEM: Disable legacy kernel modules (Always Runs)
+    # -------------------------------------------------------------------------
+    - name: 1.1.1 | Disable Legacy Protocols
+      copy:
+        dest: "/etc/modprobe.d/{{ item }}.conf"
+        content: "install {{ item }} /bin/true"
+      loop: [ 'cramfs', 'freevxfs', 'jffs2', 'hfs' ]
+
+    # -------------------------------------------------------------------------
+    # 2. PERMISSIONS: Secure system files (Always Runs)
+    # -------------------------------------------------------------------------
+    - name: 2.0.0 | Secure System File Permissions
+      file:
+        path: "{{ item.p }}"
+        mode: "{{ item.m }}"
+        owner: root
+        group: root
+      loop:
+        - { p: '/etc/passwd', m: '0644' }
+        - { p: '/etc/shadow', m: '0600' }
+        - { p: '/etc/group', m: '0644' }
+        - { p: '/etc/passwd-', m: '0600' }
+        - { p: '/boot/grub/grub.cfg', m: '0600' }
+
+    # -------------------------------------------------------------------------
+    # 3. NETWORK: Kernel Stack Hardening (Always Runs)
+    # -------------------------------------------------------------------------
+    - name: 3.0.0 | Network Sysctl Lockdown
+      sysctl:
+        name: "{{ item.n }}"
+        value: "{{ item.v }}"
+        state: present
+        reload: yes
+      loop:
+        - { n: 'kernel.randomize_va_space', v: '2' }
+        - { n: 'net.ipv4.ip_forward', v: '0' }
+        - { n: 'net.ipv4.conf.all.accept_redirects', v: '0' }
+        - { n: 'net.ipv4.conf.all.secure_redirects', v: '0' }
+        - { n: 'net.ipv4.conf.all.log_martians', v: '1' }
+        - { n: 'net.ipv4.tcp_syncookies', v: '1' }
+
+    # -------------------------------------------------------------------------
+    # 4. SSH: Secure Configuration (Skips if file doesn't exist)
+    # -------------------------------------------------------------------------
+    - name: 4.0.0 | Check if SSH Config exists
+      stat:
+        path: /etc/ssh/sshd_config
+      register: ssh_conf
+
+    - name: 4.1.0 | SSH Secure Configuration
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.reg }}"
+        line: "{{ item.line }}"
+        state: present
+      loop:
+        - { reg: '^#?Protocol', line: 'Protocol 2' }
+        - { reg: '^#?LogLevel', line: 'LogLevel INFO' }
+        - { reg: '^#?MaxAuthTries', line: 'MaxAuthTries 4' }
+        - { reg: '^#?IgnoreRhosts', line: 'IgnoreRhosts yes' }
+        - { reg: '^#?HostbasedAuthentication', line: 'HostbasedAuthentication no' }
+        - { reg: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+        - { reg: '^#?PermitEmptyPasswords', line: 'PermitEmptyPasswords no' }
+      when: ssh_conf.stat.exists
+      notify: Restart SSH
+
+    # -------------------------------------------------------------------------
+    # 5. AUTH: Password and Access Policy (Always Runs)
+    # -------------------------------------------------------------------------
+    - name: 5.4.1 | Password Aging Policies
+      lineinfile:
+        path: /etc/login.defs
+        regexp: "{{ item.reg }}"
+        line: "{{ item.line }}"
+      loop:
+        - { reg: '^PASS_MAX_DAYS', line: 'PASS_MAX_DAYS   90' }
+        - { reg: '^PASS_MIN_DAYS', line: 'PASS_MIN_DAYS   7' }
+
+    - name: 5.6 | Restrict su command
+      lineinfile:
+        path: /etc/pam.d/su
+        regexp: '^#?auth\s+required\s+pam_wheel.so'
+        line: 'auth            required        pam_wheel.so'
+
+    # -------------------------------------------------------------------------
+    # 6. LOGGING: Starting Security Services (Ignores errors if missing)
+    # -------------------------------------------------------------------------
+    - name: 6.0.0 | Ensure Logging Services are Started
+      systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop: [ 'auditd', 'rsyslog' ]
+      ignore_errors: yes
+
+    # -------------------------------------------------------------------------
+    # 7. BANNER: Compliance Warning (Always Runs)
+    # -------------------------------------------------------------------------
+    - name: 1.7.1 | Set MOTD Security Banner
+      copy:
+        dest: /etc/motd
+        content: "AUTHORIZED ACCESS ONLY. ALL ACTIVITIES RECORDED."
+        mode: '0644'
+
+  handlers:
+    - name: Restart SSH
+      service:
+        name: ssh
+        state: restarted
+      ignore_errors: yes
